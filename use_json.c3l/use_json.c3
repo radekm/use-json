@@ -44,10 +44,16 @@ struct UJsonList @align(8)
     UJsonValue[] items;
 }
 
+struct UJsonField
+{
+    UJsonString key;
+    UJsonValue value;
+}
+
 struct UJsonDict @align(8)
 {
-    UJsonString[] keys;
-    UJsonValue[] values;
+    // May contain fields with duplicate keys.
+    UJsonField[] fields;
 }
 
 // CONSIDER: Should this contain max depth?
@@ -55,12 +61,6 @@ struct UJsonParsed
 {
     String data;
     UJsonValue root;
-}
-
-struct UJsonField
-{
-    UJsonString key;
-    UJsonValue value;
 }
 
 enum UJsonPositionKind : uint

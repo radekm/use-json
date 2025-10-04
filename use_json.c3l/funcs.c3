@@ -207,17 +207,17 @@ fn void? UJsonCursor.begin_dict(&self)
 
     // Fill B-tree with the remaining items.
     UJsonDict* dict = self.pos.value.ptr();
-    foreach (usz idx, UJsonString key : dict.keys)
+    foreach (UJsonField field : dict.fields)
     {
         BTreeSlot{UJsonField} slot = new_pos.remaining_fields.@get_slot_try(
             fn int(String data, UJsonString key, UJsonField field_from_tree) =>
                 compare_ujson_strings(data, key, field_from_tree.key),
-            self.data, key)!;
+            self.data, field.key)!;
 
         // CONSIDER: Should we record the duplicate key somewhere? Or log it somewhere?
         if (slot.existed) return FIELDS_WITH_DUPLICATE_KEY?;
 
-        *slot.item = { .key = key, .value = dict.values[idx] };
+        *slot.item = field;
     }
 
     done = true;

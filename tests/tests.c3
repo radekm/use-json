@@ -18,12 +18,17 @@ fn void test_cursor_without_parser() @test
         UJsonDict* empty_dict = mem::tnew(UJsonDict);
 
         UJsonDict* top_level_dict = mem::tnew(UJsonDict);
-        top_level_dict.keys = mem::temp_array(UJsonString, 2);
-        top_level_dict.keys[0] = { .range = { .start = 2, .len = 4 } };  // Key `list`.
-        top_level_dict.keys[1] = { .range = { .start = 39, .len = 10 } };  // Key `empty dict`.
-        top_level_dict.values = mem::temp_array(UJsonValue, 2);
-        top_level_dict.values[0] = use_json::make_value(list, UJsonValueKind.LIST);
-        top_level_dict.values[1] = use_json::make_value(empty_dict, UJsonValueKind.DICT);
+        top_level_dict.fields = mem::temp_array(UJsonField, 2);
+        top_level_dict.fields[0] = {
+            // Key `list`.
+            .key = { .range = { .start = 2, .len = 4 } },
+            .value = use_json::make_value(list, UJsonValueKind.LIST),
+        };
+        top_level_dict.fields[1] = {
+            // Key `empty dict`.
+            .key = { .range = { .start = 39, .len = 10 } },
+            .value = use_json::make_value(empty_dict, UJsonValueKind.DICT),
+        };
 
         UJsonParsed parsed = {
             .data = data,
