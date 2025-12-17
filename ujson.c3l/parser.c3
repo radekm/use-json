@@ -21,8 +21,8 @@ import btree;
 // `code_point` is an approximation of column but column should depend on graphemes.
 struct Pos
 {
-    int line;
-    int code_point;
+    usz line;
+    usz code_point;
 }
 
 faultdef
@@ -277,4 +277,115 @@ fn String? parse_string_and_mutate_input(
     }
 
     return UNEXPECTED_END_OF_INPUT?;
+}
+
+fn usz skip_digits(char[] input, usz at) @private
+{
+    usz n;
+    while (at + n < input.len)
+    {
+        switch (input[at + n])
+        {
+            case '0' .. '9': n++;
+            default:
+                return n;
+        }
+    }
+    return n;
+}
+
+// Assumes that initial digit or minus sign wasn't consumed
+// and `input[cur_parsed_bytes]` points to this digit or minus sign.
+//
+// Parsing is greedy, it tries to consume as much bytes as possible.
+fn String? parse_number(
+    char[] input, usz parsed_bytes, Pos parsed_pos,
+    usz* out_parsed_bytes, Pos* out_parsed_pos) @private
+{
+    usz initially_parsed_bytes = parsed_bytes;
+    // Ensure that the current position is returned.
+    defer {
+        *out_parsed_bytes = parsed_bytes;
+        *out_parsed_pos = parsed_pos;
+    }
+
+    // Skip optional `-` at the beginning.
+    if (input[parsed_bytes] == '-')
+    {
+        parsed_bytes++;
+        parsed_pos.code_point++;
+    }
+
+    // Skip digits after sign.
+    if (parsed_bytes >= input.len) return UNEXPECTED_END_OF_INPUT?;
+    {
+        usz n = skip_digits(input, parsed_bytes);
+        switch
+        {
+            // No digits.
+            case n == 0:
+                return INVALID_NUMBER?;
+            // Zero must not be followed by other digits.
+            case n > 1 && input[parsed_bytes] == '0':
+                // Move after initial zero.
+                parsed_bytes++;
+                parsed_pos.code_point++;
+                return INVALID_NUMBER?;
+        }
+
+        parsed_bytes += n;
+        parsed_pos.code_point += n;
+    }
+
+    // Skip optional fraction.
+    if (parsed_bytes < input.len && input[parsed_bytes] == '.')
+    {
+        parsed_bytes++;
+        parsed_pos.code_point++;
+
+        usz n = skip_digits(input, parsed_bytes);
+        parsed_bytes += n;
+        parsed_pos.code_point += n;
+
+        // Fraction must contain at least one digit.
+        if (n == 0)
+        {
+            if (parsed_bytes >= input.len) return UNEXPECTED_END_OF_INPUT?;
+            return INVALID_NUMBER?;
+        }
+    }
+
+    // Skip optional exponent.
+    if (parsed_bytes < input.len)
+    {
+        char b = input[parsed_bytes];
+        if (b == 'e' || b == 'E')
+        {
+            parsed_bytes++;
+            parsed_pos.code_point++;
+
+            if (parsed_bytes >= input.len) return UNEXPECTED_END_OF_INPUT?;
+
+            // Skip optional sign.
+            b = input[parsed_bytes];
+            if (b == '+' || b == '-')
+            {
+                parsed_bytes++;
+                parsed_pos.code_point++;
+            }
+
+            usz n = skip_digits(input, parsed_bytes);
+            parsed_bytes += n;
+            parsed_pos.code_point += n;
+
+            // Exponent must contain at least one digit.
+            if (n == 0)
+            {
+                if (parsed_bytes >= input.len) return UNEXPECTED_END_OF_INPUT?;
+                return INVALID_NUMBER?;
+            }
+        }
+    }
+
+    return (String)input[initially_parsed_bytes .. parsed_bytes - 1];
 }
