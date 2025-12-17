@@ -1,4 +1,5 @@
 import std;
+import btree;
 import use_json;
 
 fn void test_cursor_without_parser() @test
@@ -7,64 +8,83 @@ fn void test_cursor_without_parser() @test
     String data = `{"list": [true, null, 1, "Quote """], "empty dict": {}}`;
     @pool()
     {
-        UJsonNumber* number = mem::tnew(UJsonNumber, { .range = { .start = 22, .len = 1 } });
-        UJsonString* string_with_quote = mem::tnew(UJsonString, { .range = { .start = 26, .len = 7 } });
+        UJsonNumber* number = mem::tnew(UJsonNumber, { .number = data[22 : 1] });
+        UJsonString* string_with_quote = mem::tnew(UJsonString, { .string = data[26 : 7] });
         UJsonList* list = mem::tnew(UJsonList);
         list.items = mem::temp_array(UJsonValue, 4);
-        list.items[0] = use_json::make_value(null, UJsonValueKind.TRUE);
-        list.items[1] = use_json::make_value(null, UJsonValueKind.NULL);  // Not necessary because this value is zero.
-        list.items[2] = use_json::make_value(number, UJsonValueKind.NUMBER);
-        list.items[3] = use_json::make_value(string_with_quote, UJsonValueKind.STRING);
+        list.items[0] = use_json::make_value(null, TRUE);
+        list.items[1] = use_json::make_value(null, NULL);  // Not necessary because this value is zero.
+        list.items[2] = use_json::make_value(number, NUMBER);
+        list.items[3] = use_json::make_value(string_with_quote, STRING);
         UJsonDict* empty_dict = mem::tnew(UJsonDict);
+        empty_dict.fields.init(tmem);
 
         UJsonDict* top_level_dict = mem::tnew(UJsonDict);
-        top_level_dict.fields = mem::temp_array(UJsonField, 2);
-        top_level_dict.fields[0] = {
-            // Key `list`.
-            .key = { .range = { .start = 2, .len = 4 } },
-            .value = use_json::make_value(list, UJsonValueKind.LIST),
-        };
-        top_level_dict.fields[1] = {
-            // Key `empty dict`.
-            .key = { .range = { .start = 39, .len = 10 } },
-            .value = use_json::make_value(empty_dict, UJsonValueKind.DICT),
-        };
-
-        UJsonParsed parsed = {
-            .data = data,
-            .root = use_json::make_value(top_level_dict, UJsonValueKind.DICT),
-        };
-
-        char[] arena_buffer = mem::talloc_array(char, 8 * mem::MB);
-        ArenaAllocator* arena = allocator::wrap(arena_buffer);
-
-        UJsonCursor c = parsed.to_cursor(arena);
-        c.@dict()
+        top_level_dict.fields.init(tmem);
         {
-            assert(!c.field("unknown field")!!);
-            assert(c.field("list")!!);
-            c.@list()
+            // Key `list`.
+            String key = data[2 : 4];
+            BTreeSlot{UJsonField} slot = top_level_dict.fields.@get_slot(
+                fn int(String key, UJsonField item_from_tree) => use_json::compare_keys(key, item_from_tree.key),
+                key);
+            slot.item.key = key;
+            slot.item.value = use_json::make_value(list, LIST);
+        }
+        {
+            // Key `empty dict`.
+            String key = data[39 : 10];
+            BTreeSlot{UJsonField} slot = top_level_dict.fields.@get_slot(
+                fn int(String key, UJsonField item_from_tree) => use_json::compare_keys(key, item_from_tree.key),
+                key);
+            slot.item.key = key;
+            slot.item.value = use_json::make_value(empty_dict, DICT);
+        }
+
+        UJsonReader reader;
+        reader.init(use_json::make_value(top_level_dict, DICT), tmem)!!;
+
+        UJsonDictCursor dict_cur = reader.cursor().dict()!!;
+        {
+            UJsonCursor cur;
+            assert(!dict_cur.field_opt("unknown field", &cur)!!);
+        }
+
+        usz last_idx;
+        foreach (idx, cur : dict_cur.field("list")!!.list()!!)
+        {
+            switch (idx)
             {
-                assert(c.item()!!);
-                assert(c.get_bool()!!);
+                case 0: assert(cur.boolean()!!);
+                case 1: assert(!cur.not_null());
+                case 2: assert(cur.num_as_long()!! == 1);
+                case 3: assert(cur.str()!! == "Quote \"");
+                default: assert(false);
+            }
+            last_idx = idx;
+        }
+        assert(last_idx == 3);
 
-                assert(c.item()!!);
-                assert(!c.non_null()!!);
+        {
+            UJsonCursor cur;
+            assert(dict_cur.field_opt("empty dict", &cur)!!);
+        }
+    };
+}
 
-                assert(c.item()!!);
-                assert(c.get_number_as_string()!! == "1");
+fn void test_error_location_reporting() @test
+{
+    @pool()
+    {
+        UJsonValue root = use_json::make_value(null, FALSE);
+        UJsonReader reader;
+        reader.init(root, tmem)!!;
+        UJsonCursor cur = reader.cursor();
 
-                assert(c.item()!!);
-                assert(c.get_string()!! == "Quote \"");
-
-                // Items which don't exist.
-                assert(!c.item()!!);
-                assert(!c.item()!!);
-            }!!;
-            assert(c.field("empty dict")!!);
-            c.@dict()
-            {
-            }!!;
-        }!!;
+        int line_before = $$LINE;
+        fault excuse = @catch(cur.dict());
+        assert(excuse == use_json::INVALID_KIND);
+        assert(reader.last_error_file == $$FILE);
+        assert(reader.last_error_func == $$FUNC);
+        assert(reader.last_error_line == line_before + 1);
     };
 }

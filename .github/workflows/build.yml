@@ -23,7 +23,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: radekm/setup-c3@v2
         with:
-          version: v0.7.6
+          # Tests need 0.7.9 which is not yet out.
+          version: v0.7.8
       - shell: bash
         run: |
           time ./test.sh
