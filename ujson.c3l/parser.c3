@@ -389,3 +389,61 @@ fn String? parse_number(
 
     return (String)input[initially_parsed_bytes .. parsed_bytes - 1];
 }
+
+// When this function returns without error we're at the end of input
+// or before a non-comment and a non-whitespace code point.
+fn void? skip_comments_and_whitespace(
+    char[] input, usz parsed_bytes, Pos parsed_pos,
+    usz* out_parsed_bytes, Pos* out_parsed_pos) @private
+{
+    usz initially_parsed_bytes = parsed_bytes;
+    // Ensure that the current position is returned.
+    defer {
+        *out_parsed_bytes = parsed_bytes;
+        *out_parsed_pos = parsed_pos;
+    }
+
+    while (parsed_bytes < input.len)
+    {
+        char b = input[parsed_bytes];
+        switch (b)
+        {
+            case ' ':
+            case '\t':
+                parsed_bytes++;
+                parsed_pos.code_point++;
+            case '\n':
+            case '\r':
+                parsed_bytes++;
+                parsed_pos.line++;
+                parsed_pos.code_point = 0;
+
+                // Check if the line ending isn't `\r\n`.
+                if (b == '\r' && parsed_bytes < input.len && input[parsed_bytes] == '\n') parsed_bytes++;
+            case '/':
+                if (parsed_bytes + 1 >= input.len || input[parsed_bytes + 1] != '/') return INVALID_COMMENT?;
+                parsed_bytes += 2;
+                parsed_pos.code_point += 2;
+
+                // Skip code points until end of line or end of input.
+                while (parsed_bytes < input.len)
+                {
+                    // Multi-byte code points can appear only inside comments.
+                    // So we use `read_code_point` only inside comments.
+                    Char32 cp;
+                    usz n;
+                    if (!read_code_point(input, parsed_bytes, &cp, &n)) return INVALID_UTF8?;
+
+                    // End of line is processed by outer loop.
+                    if (cp == '\n' || cp == '\r') break;
+
+                    if (cp < 32 && cp != '\t') return INVALID_COMMENT?;
+
+                    parsed_bytes += n;
+                    parsed_pos.code_point += 1;
+                }
+            default:
+                return;
+        }
+    }
+}
