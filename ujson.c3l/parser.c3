@@ -38,12 +38,15 @@ faultdef
 
 struct PartialList @private
 {
-    List{UJsonValue} items;
+    // We can't use `List{UJsonValue}` because it panics in case of OOM.
+    // Allocated with `work_arena` because dynamic list is not arena friendly.
+    SList{UJsonValue} items;
 }
 
 struct PartialDict @private
 {
     String last_key;
+    // Allocated directly with `result_arena` because `BTree` is arena friendly.
     BTree{UJsonField} fields;
 }
 
@@ -444,6 +447,290 @@ fn void? skip_comments_and_whitespace(
                 }
             default:
                 return;
+        }
+    }
+}
+
+enum State @private
+{
+    AFTER_LIST_OPENING, AFTER_LIST_ITEM, AFTER_LIST_COMMA,
+    AFTER_DICT_OPENING, AFTER_DICT_KEY, AFTER_DICT_COLON, AFTER_DICT_VALUE, AFTER_DICT_COMMA,
+}
+
+// Parses JSON from `input` buffer. `input` buffer may be mutated (even if this function fails).
+// Parsed `String` and `Number` values will point directly into `input` buffer.
+//
+// Parsed values are allocated with `result_arena` allocator.
+// These values are not freed even if `parse_prefix_and_mutate_input` fails.
+//
+// On the other hand, temporary structures used for parsing are allocated with `work_allocator`
+// and these are always freed. Since these temporary structures may grow and shrink,
+// allocators which don't support reallocation are not a good fit for them.
+fn UJsonValue? parse_prefix_and_mutate_input(
+    char[] input, usz parsed_bytes = 0, Pos parsed_pos = {},
+    usz* out_max_depth = null, usz* out_parsed_bytes = null, Pos* out_parsed_pos = null,
+    Allocator result_arena = tmem, Allocator work_allocator = mem)
+{
+    usz max_depth;
+    // Ensure that the current max_depth and position are returned.
+    defer {
+        if (out_max_depth) *out_max_depth = max_depth;
+        if (out_parsed_bytes) *out_parsed_bytes = parsed_bytes;
+        if (out_parsed_pos) *out_parsed_pos = parsed_pos;
+    }
+
+    SList{Partial} partial;
+    defer {
+        // We intentionally don't free values allocated with `result_arena`.
+        // It would be too difficult because they can be arbitrary deep and we don't want to use any extra memory.
+        foreach (&p : partial)
+        {
+            switch (p.kind)
+            {
+                case LIST:
+                    p.list.items.free(work_allocator);
+                case DICT:
+                    // No need to free because BTrees were allocated with `result_arena`.
+            }
+        }
+        partial.free(work_allocator);
+    }
+
+    State state;
+
+    // Each iteration processes one token optionally preceded by comments and whitespace.
+    // The loop ends with an error or when the value is parsed.
+    while NEXT_TOKEN: (true)
+    {
+        skip_comments_and_whitespace(input, parsed_bytes, parsed_pos, &parsed_bytes, &parsed_pos)!;
+
+        if (parsed_bytes >= input.len) return UNEXPECTED_END_OF_INPUT?;
+
+        // Multi-byte code points can appear only in comments and strings.
+        // So at this point we don't have to use `read_code_point`.
+        char b = input[parsed_bytes];
+
+        Maybe{UJsonValue} value;
+
+        // Process tokens which may appear only inside list or dict.
+        if (partial.len() != 0)
+        {
+            switch BYTE_SWITCH: (b)
+            {
+                case ']':
+                    switch (state)
+                    {
+                        // End of list may appear in any list state.
+                        case AFTER_LIST_OPENING:
+                        case AFTER_LIST_ITEM:
+                        case AFTER_LIST_COMMA:
+                            parsed_bytes++;
+                            parsed_pos.code_point++;
+
+                            Partial p = partial.pop();
+                            assert(p.kind == LIST);
+                            defer p.list.items.free(work_allocator);
+
+                            // Create list value.
+                            UJsonList* list_value = allocator::new_try(result_arena, UJsonList)!;
+
+                            // Copy items from `work_allocator` to `result_arena`.
+                            if (p.list.items.len() != 0)
+                            {
+                                list_value.items = allocator::alloc_array_try(result_arena, UJsonValue, p.list.items.len())!;
+                                mem::copy(list_value.items.ptr, p.list.items.data, p.list.items.len() * UJsonValue.sizeof);
+                            }
+                            value.set(make_value(list_value, LIST));
+                            // New `state` is set when processing new `value`.
+                        default:
+                            return INVALID_TOKEN?;
+                    }
+                case '}':
+                    switch (state)
+                    {
+                        case AFTER_DICT_OPENING:
+                        case AFTER_DICT_VALUE:
+                        case AFTER_DICT_COMMA:
+                            parsed_bytes++;
+                            parsed_pos.code_point++;
+
+                            Partial p = partial.pop();
+                            assert(p.kind == DICT);
+
+                            // Create dict value. And make shallow copy of `BTree` which works
+                            // because it was already allocated with `result_arena`.
+                            UJsonDict* dict_value = allocator::new_try(result_arena, UJsonDict)!;
+                            dict_value.fields = p.dict.fields;
+                            value.set(make_value(dict_value, DICT));
+                            // New `state` is set when processing new `value`.
+                        default:
+                            return INVALID_TOKEN?;
+                    }
+                case ':':
+                    switch (state)
+                    {
+                        case AFTER_DICT_KEY:
+                            parsed_bytes++;
+                            parsed_pos.code_point++;
+                            state = AFTER_DICT_COLON;
+                            continue NEXT_TOKEN;
+                        default:
+                            return INVALID_TOKEN?;
+                    }
+                case ',':
+                    switch (state)
+                    {
+                        case AFTER_LIST_ITEM:
+                            parsed_bytes++;
+                            parsed_pos.code_point++;
+                            state = AFTER_LIST_COMMA;
+                            continue NEXT_TOKEN;
+                        case AFTER_DICT_VALUE:
+                            parsed_bytes++;
+                            parsed_pos.code_point++;
+                            state = AFTER_DICT_COMMA;
+                            continue NEXT_TOKEN;
+                        default:
+                            return INVALID_TOKEN?;
+                    }
+                default:
+                    switch (state)
+                    {
+                        case AFTER_LIST_OPENING:
+                        case AFTER_LIST_COMMA:
+                        case AFTER_DICT_COLON:
+                            // We expect start of new value.
+                            // Let the execution continue below.
+                            break BYTE_SWITCH;
+                        case AFTER_DICT_OPENING:
+                        case AFTER_DICT_COMMA:
+                            // We expect key (because we already know that there isn't `}`).
+                            if (b != '"') return INVALID_TOKEN?;
+
+                            parsed_bytes++;
+                            parsed_pos.code_point++;
+
+                            String key = parse_string_and_mutate_input(
+                                input, parsed_bytes, parsed_pos,
+                                &parsed_bytes, &parsed_pos)!;
+
+                            Partial* p = &partial[partial.len() - 1];
+                            assert(p.kind == DICT);
+                            p.dict.last_key = key;
+                            state = AFTER_DICT_KEY;
+                            continue NEXT_TOKEN;
+                        default:
+                            // We read byte which was not expected in current state.
+                            return INVALID_TOKEN?;
+                    }
+            }
+        }
+
+        // No `value` at this point means that `b` wasn't processed yet
+        // and start of a new value is expected.
+        if (!value.has_value)
+        {
+            switch (b)
+            {
+                case 'n':
+                    bool ok = parsed_bytes + 3 < input.len;
+                    ok = ok && input[parsed_bytes + 1] == 'u';
+                    ok = ok && input[parsed_bytes + 2] == 'l';
+                    ok = ok && input[parsed_bytes + 3] == 'l';
+                    if (!ok) return INVALID_TOKEN?;
+                    parsed_bytes += 4;
+                    parsed_pos.code_point += 4;
+                    value.set(make_value(null, NULL));
+                case 't':
+                    bool ok = parsed_bytes + 3 < input.len;
+                    ok = ok && input[parsed_bytes + 1] == 'r';
+                    ok = ok && input[parsed_bytes + 2] == 'u';
+                    ok = ok && input[parsed_bytes + 3] == 'e';
+                    if (!ok) return INVALID_TOKEN?;
+                    parsed_bytes += 4;
+                    parsed_pos.code_point += 4;
+                    value.set(make_value(null, TRUE));
+                case 'f':
+                    bool ok = parsed_bytes + 4 < input.len;
+                    ok = ok && input[parsed_bytes + 1] == 'a';
+                    ok = ok && input[parsed_bytes + 2] == 'l';
+                    ok = ok && input[parsed_bytes + 3] == 's';
+                    ok = ok && input[parsed_bytes + 4] == 'e';
+                    if (!ok) return INVALID_TOKEN?;
+                    parsed_bytes += 5;
+                    parsed_pos.code_point += 5;
+                    value.set(make_value(null, FALSE));
+                case '"':
+                    parsed_bytes++;
+                    parsed_pos.code_point++;
+
+                    String str = parse_string_and_mutate_input(
+                        input, parsed_bytes, parsed_pos,
+                        &parsed_bytes, &parsed_pos)!;
+
+                    UJsonString* str_value = allocator::new_try(result_arena, UJsonString)!;
+                    str_value.string = str;
+                    value.set(make_value(str_value, STRING));
+                // Numbers can't start with `+`.
+                case '-':
+                case '0' .. '9':
+                    String num = parse_number(
+                        input, parsed_bytes, parsed_pos,
+                        &parsed_bytes, &parsed_pos)!;
+
+                    UJsonNumber* num_value = allocator::new_try(result_arena, UJsonNumber)!;
+                    num_value.number = num;
+                    value.set(make_value(num_value, NUMBER));
+                case '[':
+                    parsed_bytes++;
+                    parsed_pos.code_point++;
+
+                    Partial p;
+                    p.kind = LIST;
+                    partial.push(p, work_allocator)!;
+                    max_depth = max(max_depth, partial.len());  // Update `max_depth`.
+
+                    state = AFTER_LIST_OPENING;
+                case '{':
+                    parsed_bytes++;
+                    parsed_pos.code_point++;
+
+                    Partial p;
+                    p.kind = DICT;
+                    p.dict.fields.init_try(result_arena)!;
+                    partial.push(p, work_allocator)!;
+                    max_depth = max(max_depth, partial.len());  // Update `max_depth`.
+
+                    state = AFTER_DICT_OPENING;
+                default:
+                    return INVALID_TOKEN?;
+            }
+        }
+
+        // We have read value.
+        // If we don't exit the function we must set new `state`.
+        if (value.has_value)
+        {
+            UJsonValue v = value.value;
+            // Top-level value has been read. We're done.
+            if (partial.len() == 0) return v;
+
+            // Othwerwise we're inside list or dict and we read one item.
+            Partial* p = &partial[partial.len() - 1];
+            switch (p.kind)
+            {
+                case LIST:
+                    state = AFTER_LIST_ITEM;
+                    p.list.items.push(v, work_allocator)!;
+                case DICT:
+                    state = AFTER_DICT_VALUE;
+                    BTreeSlot{UJsonField} slot = p.dict.fields.@get_slot_try(
+                        fn int(String key, UJsonField item_from_tree) => compare_keys(key, item_from_tree.key),
+                        p.dict.last_key)!;
+                    // CONSIDER: Record which key is duplicate.
+                    if (slot.existed) return DUPLICATE_KEY?;
+                    *slot.item = { .key = p.dict.last_key, .value = v };
+            }
         }
     }
 }

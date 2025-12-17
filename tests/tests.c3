@@ -88,3 +88,45 @@ fn void test_error_location_reporting() @test
         assert(reader.last_error_line == line_before + 1);
     };
 }
+
+fn void test_parsing_and_reading() @test
+{
+    @pool()
+    {
+        String s = `{ "str": "Hello", "num": 123, "list": [0.12, true, null, false, ] }`;
+        String input = s.tcopy();
+
+        UJsonValue root = ujson::parse_prefix_and_mutate_input(input)!!;
+        UJsonReader reader;
+        // Test reading.
+        reader.init(root, mem)!!;
+        defer reader.free();
+
+        UJsonCursor cur = reader.cursor();
+        UJsonDictCursor dict_cur = cur.dict()!!;
+        assert(dict_cur.field("str")!!.str()!! == "Hello");;
+        assert(dict_cur.field("num")!!.num_as_str()!! == "123");
+
+        UJsonListCursor list_cur = dict_cur.field("list")!!.list()!!;
+        foreach (idx, item_cur : list_cur)
+        {
+            switch (idx)
+            {
+                case 0:
+                    assert(item_cur.num_as_double()!! == 0.12);
+                case 1:
+                    assert(item_cur.boolean()!! == true);
+                case 2:
+                    assert(item_cur.not_null() == false);
+                case 3:
+                    assert(item_cur.boolean()!! == false);
+                default:
+                    assert(false);
+            }
+        }
+        assert(list_cur.len() == 4);
+
+        UJsonCursor opt_cur;
+        assert(!dict_cur.field_opt("non-existent key", &opt_cur)!!);
+    };
+}
