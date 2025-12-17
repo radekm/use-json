@@ -1,5 +1,5 @@
 {
-    "provides": "use_json",
+    "provides": "ujson",
     "dependencies": ["btree"],
     "targets": {
         "macos-aarch64": {},

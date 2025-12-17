@@ -1,4 +1,4 @@
-module use_json;
+module ujson;
 
 import std;
 import libc;
