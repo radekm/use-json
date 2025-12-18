@@ -41,7 +41,8 @@ fn void test_cursor_without_parser() @test
         }
 
         UJsonReader reader;
-        reader.init(ujson::make_value(top_level_dict, DICT), tmem)!!;
+        reader.init(ujson::make_value(top_level_dict, DICT), mem)!!;
+        defer reader.free();
 
         UJsonDictCursor dict_cur = reader.cursor().dict()!!;
         {
@@ -77,7 +78,8 @@ fn void test_error_location_reporting() @test
     {
         UJsonValue root = ujson::make_value(null, FALSE);
         UJsonReader reader;
-        reader.init(root, tmem)!!;
+        reader.init(root, mem)!!;
+        defer reader.free();
         UJsonCursor cur = reader.cursor();
 
         int line_before = $$LINE;
@@ -403,5 +405,116 @@ fn void test_unicode_parsing() @test
         assert(parsed_pos.line == 0);
         assert(parsed_pos.code_point == 6);
         assert(@catch(root) == ujson::INVALID_UTF8);
+    };
+}
+
+fn void test_unexpected_end() @test
+{
+    String[*] samples = {
+        " \"hello",
+
+        "-",
+        "1.",
+        "1.2e",
+        "1.2e+",
+        "1.2e-",
+
+        "[",
+        "[1",
+        "[1,",
+
+        "{",
+        "{ \"foo\"",
+        "{ \"foo\": ",
+        "{ \"foo\": true",
+        "{ \"foo\": true, ",
+    };
+
+    foreach (s : samples)
+    {
+        @pool()
+        {
+            String input = s.tcopy();
+
+            usz max_depth;
+            usz parsed_bytes;
+            Pos parsed_pos;
+            UJsonValue? root = ujson::parse_prefix_and_mutate_input(
+                input,
+                out_max_depth: &max_depth,
+                out_parsed_bytes: &parsed_bytes,
+                out_parsed_pos: &parsed_pos);
+
+            assert(max_depth == (@ok(s.index_of_chars({ '{', '[' })) ? 1 : 0));
+            assert(parsed_bytes == s.len);
+            assert(parsed_pos.line == 0);
+            assert(parsed_pos.code_point == s.len);
+            assert(@catch(root) == ujson::UNEXPECTED_END_OF_INPUT);
+        };
+    }
+}
+
+fn void test_invalid_token() @test
+{
+    String[*] samples = {
+        "  nul",
+        " t",
+        " fa",
+        "\thello",
+    };
+    foreach (s : samples)
+    {
+        @pool()
+        {
+            String input = s.tcopy();
+
+            usz max_depth;
+            usz parsed_bytes;
+            Pos parsed_pos;
+            UJsonValue? root = ujson::parse_prefix_and_mutate_input(
+                input,
+                out_max_depth: &max_depth,
+                out_parsed_bytes: &parsed_bytes,
+                out_parsed_pos: &parsed_pos);
+
+            assert(max_depth == 0);
+            usz skipped_spaces = s.len - s.trim_left().len;
+            assert(parsed_bytes == skipped_spaces);
+            assert(parsed_pos.line == 0);
+            assert(parsed_pos.code_point == skipped_spaces);
+            assert(@catch(root) == ujson::INVALID_TOKEN);
+        };
+    }
+}
+
+fn void test_already_used_keys() @test
+{
+    @pool()
+    {
+        String s = `{ "a": 1, "b": 2, "c": [true, { "d": 3, "e": 4 }] }`;
+        String input = s.tcopy();
+
+        UJsonValue root = ujson::parse_prefix_and_mutate_input(input)!!;
+
+        UJsonReader reader;
+        reader.init(root, mem)!!;
+        defer reader.free();
+
+        UJsonCursor cur = reader.cursor();
+        UJsonDictCursor dict_cur = cur.dict()!!;
+        assert(dict_cur.field("a")!!.num_as_str()!! == "1");
+        assert(dict_cur.field("b")!!.num_as_str()!! == "2");
+
+        UJsonListCursor list_cur = dict_cur.field("c")!!.list()!!;
+
+        {
+            UJsonDictCursor nested_dict_cur = list_cur[1].dict()!!;
+            assert(nested_dict_cur.field("d")!!.num_as_str()!! == "3");
+            // Intentionally use `d` again.
+            assert(@catch(nested_dict_cur.field("d")) == ujson::FIELD_ALREADY_USED);
+        }
+
+        // Intentionally use `a` again.
+        assert(@catch(dict_cur.field("a")) == ujson::FIELD_ALREADY_USED);
     };
 }
