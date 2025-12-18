@@ -518,3 +518,77 @@ fn void test_already_used_keys() @test
         assert(@catch(dict_cur.field("a")) == ujson::FIELD_ALREADY_USED);
     };
 }
+
+fn void test_unused_keys() @test
+{
+    @pool()
+    {
+        String s = `{ "a": 1, "b": 2, "c": [true, { "d": 3, "e": 4 }] }`;
+        String input = s.tcopy();
+
+        UJsonValue root = ujson::parse_prefix_and_mutate_input(input)!!;
+
+        UJsonReader reader;
+        reader.init(root, mem)!!;
+        defer reader.free();
+
+        UJsonCursor cur = reader.cursor();
+        UJsonDictCursor dict_cur = cur.dict()!!;
+
+        assert(dict_cur.field("a")!!.num_as_long()!! == 1);
+        // Intentionally don't use `b`.
+
+        UJsonListCursor list_cur = dict_cur.field("c")!!.list()!!;
+        cur = list_cur.get(1);
+        {
+            UJsonDictCursor nested_dict_cur = cur.dict()!!;
+            nested_dict_cur.field("d")!!;
+            // Intentionally don't use `e`.
+        }
+
+        // Find unused keys.
+        {
+            SList{UJsonPathSegment} path;
+            path.init(mem);
+            defer path.free();
+
+            bool unused_b, unused_e;
+            while FIND_UNUSED_KEYS: (true)
+            {
+                reader.find_next_unused_field(&path)!!;
+
+                switch (path.len())
+                {
+                    case 0:
+                        // We found everything.
+                        break FIND_UNUSED_KEYS;
+                    case 1:
+                        assert(path[0].parent == reader.root);
+                        assert(path[0].idx == 0);
+                        assert(path[0].key == "b");
+
+                        assert(!unused_b);
+                        unused_b = true;
+                    case 3:
+                        assert(path[0].parent == reader.root);
+                        assert(path[0].idx == 0);
+                        assert(path[0].key == "c");
+                        assert(path[1].parent == ujson::make_value(list_cur.list, LIST));
+                        assert(path[1].idx == 1);
+                        assert(path[1].key == "");
+                        assert(path[2].parent == cur.value);
+                        assert(path[2].idx == 0);
+                        assert(path[2].key == "e");
+
+                        assert(!unused_e);
+                        unused_e = true;
+                    default:
+                        // Unexpected length.
+                        assert(false);
+                }
+            }
+            assert(unused_b && unused_e);
+        }
+    };
+}
+

@@ -480,6 +480,7 @@ fn UJsonValue? parse_prefix_and_mutate_input(
     }
 
     SList{Partial} partial;
+    partial.init(work_allocator);
     defer {
         // We intentionally don't free values allocated with `result_arena`.
         // It would be too difficult because they can be arbitrary deep and we don't want to use any extra memory.
@@ -488,12 +489,12 @@ fn UJsonValue? parse_prefix_and_mutate_input(
             switch (p.kind)
             {
                 case LIST:
-                    p.list.items.free(work_allocator);
+                    p.list.items.free();
                 case DICT:
                     // No need to free because BTrees were allocated with `result_arena`.
             }
         }
-        partial.free(work_allocator);
+        partial.free();
     }
 
     State state;
@@ -529,7 +530,7 @@ fn UJsonValue? parse_prefix_and_mutate_input(
 
                             Partial p = partial.pop();
                             assert(p.kind == LIST);
-                            defer p.list.items.free(work_allocator);
+                            defer p.list.items.free();
 
                             // Create list value.
                             UJsonList* list_value = allocator::new_try(result_arena, UJsonList)!;
@@ -557,7 +558,7 @@ fn UJsonValue? parse_prefix_and_mutate_input(
                             Partial p = partial.pop();
                             assert(p.kind == DICT);
 
-                            // Create dict value. And make shallow copy of `BTree` which works
+                            // Create dict value. And make shallow copy of `BTree` - that works
                             // because it was already allocated with `result_arena`.
                             UJsonDict* dict_value = allocator::new_try(result_arena, UJsonDict)!;
                             dict_value.fields = p.dict.fields;
@@ -687,7 +688,8 @@ fn UJsonValue? parse_prefix_and_mutate_input(
 
                     Partial p;
                     p.kind = LIST;
-                    partial.push(p, work_allocator)!;
+                    p.list.items.init(work_allocator);
+                    partial.push(p)!;
                     max_depth = max(max_depth, partial.len());  // Update `max_depth`.
 
                     state = AFTER_LIST_OPENING;
@@ -698,7 +700,7 @@ fn UJsonValue? parse_prefix_and_mutate_input(
                     Partial p;
                     p.kind = DICT;
                     p.dict.fields.init_try(result_arena)!;
-                    partial.push(p, work_allocator)!;
+                    partial.push(p)!;
                     max_depth = max(max_depth, partial.len());  // Update `max_depth`.
 
                     state = AFTER_DICT_OPENING;
@@ -721,7 +723,7 @@ fn UJsonValue? parse_prefix_and_mutate_input(
             {
                 case LIST:
                     state = AFTER_LIST_ITEM;
-                    p.list.items.push(v, work_allocator)!;
+                    p.list.items.push(v)!;
                 case DICT:
                     state = AFTER_DICT_VALUE;
                     BTreeSlot{UJsonField} slot = p.dict.fields.@get_slot_try(
