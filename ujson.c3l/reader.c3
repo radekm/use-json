@@ -228,7 +228,8 @@ fn int compare_keys(String a, String b)
 
 fn int compare_used_field(UJsonDict* dict, String key, UJsonUsedField item_from_tree)
 {
-    switch {
+    switch
+    {
         case (uptr)dict < (uptr)item_from_tree.dict: return -1;
         case (uptr)dict > (uptr)item_from_tree.dict: return 1;
         default: return compare_keys(key, item_from_tree.key);

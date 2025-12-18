@@ -130,3 +130,278 @@ fn void test_parsing_and_reading() @test
         assert(!dict_cur.field_opt("non-existent key", &opt_cur)!!);
     };
 }
+
+fn void test_unicode_parsing() @test
+{
+    // Unicode without escape sequences.
+    @pool()
+    {
+        // Code points 'pč∞🙈'.
+        String s = "\"1-byte code point 'p', 2-byte code point '\xc4\x8d', 3-byte code point '\xe2\x88\x9e', 4-byte code point '\xf0\x9f\x99\x88'\"";
+        String input = s.tcopy();
+
+        usz max_depth;
+        usz parsed_bytes;
+        Pos parsed_pos;
+        UJsonValue root = ujson::parse_prefix_and_mutate_input(
+            input,
+            out_max_depth: &max_depth,
+            out_parsed_bytes: &parsed_bytes,
+            out_parsed_pos: &parsed_pos)!!;
+        assert(max_depth == 0);
+        assert(parsed_bytes == 43 + 2 + 22 + 3 + 22 + 4 + 2);
+        assert(parsed_pos.line == 0);
+        assert(parsed_pos.code_point == 43 + 1 + 22 + 1 + 22 + 1 + 2);
+
+        UJsonReader reader;
+        reader.init(root, mem)!!;
+        defer reader.free();
+
+        UJsonCursor cur = reader.cursor();
+        // Reader reads the same string as `s` but without double quotes.
+        assert(cur.str()!! == s[1 .. ^2]);
+    };
+
+    // Unicode with `\uXXXX` escape sequences.
+    @pool()
+    {
+        // Code points 'pč∞🙈'. The last code point intetionally used lower case hex digits.
+        String s = "\"1-byte cp '\\u0070', 2-byte cp '\\u010D', 3-byte cp '\\u221E', 4-byte cp '\\ud83d\\ude48'\"";
+        String input = s.tcopy();
+
+        usz max_depth;
+        usz parsed_bytes;
+        Pos parsed_pos;
+        UJsonValue root = ujson::parse_prefix_and_mutate_input(
+            input,
+            out_max_depth: &max_depth,
+            out_parsed_bytes: &parsed_bytes,
+            out_parsed_pos: &parsed_pos)!!;
+
+        assert(max_depth == 0);
+        assert(parsed_bytes == 12 + 6 + 14 + 6 + 14 + 6 + 14 + 12 + 2);
+        assert(parsed_pos.line == 0);
+        assert(parsed_pos.code_point == parsed_bytes);
+
+        UJsonReader reader;
+        reader.init(root, mem)!!;
+        defer reader.free();
+
+        UJsonCursor cur = reader.cursor();
+        // Reader reads string where escape sequences are replaced by actual code points.
+        assert(cur.str()!! == "1-byte cp 'p', 2-byte cp 'č', 3-byte cp '∞', 4-byte cp '🙈'");
+    };
+
+    // Overlong encodings are rejected.
+    @pool()
+    {
+        // 1-byte code point `p` encoded in 2, 3 and 4 bytes.
+        {
+            String cp1as2 = "\"Foo \xC1\xB0 bar\"";
+            String input = cp1as2.tcopy();
+
+            usz max_depth;
+            usz parsed_bytes;
+            Pos parsed_pos;
+            UJsonValue? root = ujson::parse_prefix_and_mutate_input(
+                input,
+                out_max_depth: &max_depth,
+                out_parsed_bytes: &parsed_bytes,
+                out_parsed_pos: &parsed_pos);
+
+            assert(max_depth == 0);
+            assert(parsed_bytes == 5);
+            assert(parsed_pos.line == 0);
+            assert(parsed_pos.code_point == 5);
+            assert(@catch(root) == ujson::INVALID_UTF8);
+        }
+        {
+            String cp1as3 = "\"Foo \xE0\x81\xB0 bar\"";
+            String input = cp1as3.tcopy();
+
+            usz max_depth;
+            usz parsed_bytes;
+            Pos parsed_pos;
+            UJsonValue? root = ujson::parse_prefix_and_mutate_input(
+                input,
+                out_max_depth: &max_depth,
+                out_parsed_bytes: &parsed_bytes,
+                out_parsed_pos: &parsed_pos);
+
+            assert(max_depth == 0);
+            assert(parsed_bytes == 5);
+            assert(parsed_pos.line == 0);
+            assert(parsed_pos.code_point == 5);
+            assert(@catch(root) == ujson::INVALID_UTF8);
+        }
+        {
+            String cp1as4 = "\"Foo \xF0\x80\x81\xB0 bar\"";
+            String input = cp1as4.tcopy();
+
+            usz max_depth;
+            usz parsed_bytes;
+            Pos parsed_pos;
+            UJsonValue? root = ujson::parse_prefix_and_mutate_input(
+                input,
+                out_max_depth: &max_depth,
+                out_parsed_bytes: &parsed_bytes,
+                out_parsed_pos: &parsed_pos);
+
+            assert(max_depth == 0);
+            assert(parsed_bytes == 5);
+            assert(parsed_pos.line == 0);
+            assert(parsed_pos.code_point == 5);
+            assert(@catch(root) == ujson::INVALID_UTF8);
+        }
+
+        // 2-byte code point `č` encoded in 3 and 4 bytes.
+        {
+            String cp2as3 = "\"\xE0\x84\x8D\"";
+            String input = cp2as3.tcopy();
+
+            usz max_depth;
+            usz parsed_bytes;
+            Pos parsed_pos;
+            UJsonValue? root = ujson::parse_prefix_and_mutate_input(
+                input,
+                out_max_depth: &max_depth,
+                out_parsed_bytes: &parsed_bytes,
+                out_parsed_pos: &parsed_pos);
+
+            assert(max_depth == 0);
+            assert(parsed_bytes == 1);
+            assert(parsed_pos.line == 0);
+            assert(parsed_pos.code_point == 1);
+            assert(@catch(root) == ujson::INVALID_UTF8);
+        }
+        {
+            String cp2as4 = "\"\xF0\x80\x84\x8D\"";
+            String input = cp2as4.tcopy();
+
+            usz max_depth;
+            usz parsed_bytes;
+            Pos parsed_pos;
+            UJsonValue? root = ujson::parse_prefix_and_mutate_input(
+                input,
+                out_max_depth: &max_depth,
+                out_parsed_bytes: &parsed_bytes,
+                out_parsed_pos: &parsed_pos);
+
+            assert(max_depth == 0);
+            assert(parsed_bytes == 1);
+            assert(parsed_pos.line == 0);
+            assert(parsed_pos.code_point == 1);
+            assert(@catch(root) == ujson::INVALID_UTF8);
+        }
+
+        // 3-byte code point `∞` encoded in 4 bytes.
+        {
+            String cp3as4 = "\"\xF0\x82\x88\x9E\"";
+            String input = cp3as4.tcopy();
+
+            usz max_depth;
+            usz parsed_bytes;
+            Pos parsed_pos;
+            UJsonValue? root = ujson::parse_prefix_and_mutate_input(
+                input,
+                out_max_depth: &max_depth,
+                out_parsed_bytes: &parsed_bytes,
+                out_parsed_pos: &parsed_pos);
+
+            assert(max_depth == 0);
+            assert(parsed_bytes == 1);
+            assert(parsed_pos.line == 0);
+            assert(parsed_pos.code_point == 1);
+            assert(@catch(root) == ujson::INVALID_UTF8);
+        }
+
+        // 4-byte code point `🙈` encoded in 5 bytes.
+        {
+            String cp4as5 = "\"\xf8\x80\x9F\x99\x88\"";
+            String input = cp4as5.tcopy();
+
+            usz max_depth;
+            usz parsed_bytes;
+            Pos parsed_pos;
+            UJsonValue? root = ujson::parse_prefix_and_mutate_input(
+                input,
+                out_max_depth: &max_depth,
+                out_parsed_bytes: &parsed_bytes,
+                out_parsed_pos: &parsed_pos);
+
+            assert(max_depth == 0);
+            assert(parsed_bytes == 1);
+            assert(parsed_pos.line == 0);
+            assert(parsed_pos.code_point == 1);
+            assert(@catch(root) == ujson::INVALID_UTF8);
+        }
+    };
+
+    // Code points from surrogate range are rejected.
+    @pool()
+    {
+        // Valid treasure chest `🪎` (4 bytes) followed by space and surrogate.
+        String s = "\"\xf0\x9f\xaa\x8e \xED\xA0\x80\"";
+        String input = s.tcopy();
+
+        usz max_depth;
+        usz parsed_bytes;
+        Pos parsed_pos;
+        UJsonValue? root = ujson::parse_prefix_and_mutate_input(
+            input,
+            out_max_depth: &max_depth,
+            out_parsed_bytes: &parsed_bytes,
+            out_parsed_pos: &parsed_pos);
+
+        assert(max_depth == 0);
+        assert(parsed_bytes == 6);
+        assert(parsed_pos.line == 0);
+        assert(parsed_pos.code_point == 3);
+        assert(@catch(root) == ujson::INVALID_UTF8);
+    };
+
+    // Incomplete code point is rejected.
+    @pool()
+    {
+        // Incomplete treasure chest `🪎` (only 3 bytes instead of 4) followed by ASCII.
+        String s = "\"\xf0\x9f\xaaHello\"";
+        String input = s.tcopy();
+
+        usz max_depth;
+        usz parsed_bytes;
+        Pos parsed_pos;
+        UJsonValue? root = ujson::parse_prefix_and_mutate_input(
+            input,
+            out_max_depth: &max_depth,
+            out_parsed_bytes: &parsed_bytes,
+            out_parsed_pos: &parsed_pos);
+
+        assert(max_depth == 0);
+        assert(parsed_bytes == 1);
+        assert(parsed_pos.line == 0);
+        assert(parsed_pos.code_point == 1);
+        assert(@catch(root) == ujson::INVALID_UTF8);
+    };
+
+    // Code point starting with continuation byte is rejected.
+    @pool()
+    {
+        String s = "\"Hello\x80World\"";
+        String input = s.tcopy();
+
+        usz max_depth;
+        usz parsed_bytes;
+        Pos parsed_pos;
+        UJsonValue? root = ujson::parse_prefix_and_mutate_input(
+            input,
+            out_max_depth: &max_depth,
+            out_parsed_bytes: &parsed_bytes,
+            out_parsed_pos: &parsed_pos);
+
+        assert(max_depth == 0);
+        assert(parsed_bytes == 6);
+        assert(parsed_pos.line == 0);
+        assert(parsed_pos.code_point == 6);
+        assert(@catch(root) == ujson::INVALID_UTF8);
+    };
+}
