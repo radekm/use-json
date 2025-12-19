@@ -736,3 +736,34 @@ fn UJsonValue? parse_prefix_and_mutate_input(
         }
     }
 }
+
+// Parses entire `input` ensuring that nothing remains.
+fn UJsonValue? parse_and_mutate_input(
+    char[] input,
+    usz* out_max_depth = null, usz* out_parsed_bytes = null, Pos* out_parsed_pos = null,
+    Allocator result_arena = tmem, Allocator work_allocator = mem)
+{
+    usz max_depth;
+    usz parsed_bytes;
+    Pos parsed_pos;
+    // Ensure that the current max_depth and position are returned.
+    defer {
+        if (out_max_depth) *out_max_depth = max_depth;
+        if (out_parsed_bytes) *out_parsed_bytes = parsed_bytes;
+        if (out_parsed_pos) *out_parsed_pos = parsed_pos;
+    }
+
+    UJsonValue root = parse_prefix_and_mutate_input(
+        input,
+        out_max_depth: &max_depth,
+        out_parsed_bytes: &parsed_bytes,
+        out_parsed_pos: &parsed_pos,
+        result_arena: result_arena,
+        work_allocator: work_allocator)!;
+
+    skip_comments_and_whitespace(input, parsed_bytes, parsed_pos, &parsed_bytes, &parsed_pos)!;
+
+    if (parsed_bytes != input.len) return UNEXPECTED_TRAILING_INPUT?;
+
+    return root;
+}
